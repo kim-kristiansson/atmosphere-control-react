@@ -7,15 +7,11 @@ interface SwipeNumberInputProps {
     max?: number
     step?: number
     label?: string
-    // Speed sensitivity props
-    sensitivity?: number
-    maxMultiplier?: number
-    minThreshold?: number
     wheelSensitivity?: number
-    // Distance sensitivity props
-    distanceSensitivity?: number // How quickly distance affects speed (lower = faster effect)
-    maxDistanceMultiplier?: number // Maximum speed multiplier from distance
-    // Decimal control props
+    distanceSensitivity?: number
+    maxDistanceMultiplier?: number
+    distanceExponent?: number
+    minThreshold?: number
     allowDecimals?: boolean
     decimalPlaces?: number
 }
@@ -27,23 +23,17 @@ const SmartNumberInput: React.FC<SwipeNumberInputProps> = ({
     max = Infinity,
     step = 1,
     label = 'Value',
-    // Speed defaults
-    sensitivity = 300,
-    maxMultiplier = 2,
-    minThreshold = 0.1,
     wheelSensitivity = 0.5,
-    // Distance defaults
-    distanceSensitivity = 100, // Pixels needed for full effect
-    maxDistanceMultiplier = 3, // Maximum multiplier from distance
-    // Decimal defaults
+    distanceSensitivity = 100,
+    maxDistanceMultiplier = 3,
+    distanceExponent = 2,
+    minThreshold = 0.1,
     allowDecimals = false,
     decimalPlaces = 2,
 }) => {
     const [isDragging, setIsDragging] = useState(false)
-    const [currentSpeed, setCurrentSpeed] = useState(0)
     const [startY, setStartY] = useState(0)
     const lastY = useRef(0)
-    const lastTime = useRef(Date.now())
     const intervalRef = useRef<number>()
     const containerRef = useRef<HTMLDivElement>(null)
 
@@ -68,26 +58,24 @@ const SmartNumberInput: React.FC<SwipeNumberInputProps> = ({
     )
 
     const calculateNewValue = useCallback(
-        (speed: number, currentY: number): number => {
-            // Calculate base multiplier from movement speed
-            const speedMultiplier = Math.min(Math.abs(speed) / sensitivity, maxMultiplier)
-
-            // Calculate distance multiplier using sensitivity props
+        (currentY: number): number => {
+            // Calculate distance from start position
             const distance = Math.abs(currentY - startY)
-            const distanceMultiplier = Math.min(
-                distance / distanceSensitivity,
-                maxDistanceMultiplier
-            )
+            const normalizedDistance = distance / distanceSensitivity
 
-            // Combine speed and distance multipliers
-            const totalMultiplier = speedMultiplier * (1 + distanceMultiplier)
+            // Apply exponential scaling to the normalized distance
+            const multiplier = Math.pow(normalizedDistance, distanceExponent)
 
-            if (totalMultiplier < minThreshold) return value
+            // Cap the multiplier at the maximum
+            const cappedMultiplier = Math.min(multiplier, maxDistanceMultiplier)
 
-            // Apply easing for more precise control
-            const easedMultiplier = Math.pow(totalMultiplier, 1.5)
+            if (cappedMultiplier < minThreshold) return value
 
-            const increment = step * easedMultiplier * Math.sign(speed)
+            // Determine direction based on current position relative to start
+            const direction = currentY > startY ? 1 : -1
+
+            // Calculate increment based only on distance
+            const increment = step * cappedMultiplier * direction
             const newValue = value - increment
 
             return Math.min(Math.max(roundValue(newValue), min), max)
@@ -97,69 +85,53 @@ const SmartNumberInput: React.FC<SwipeNumberInputProps> = ({
             step,
             min,
             max,
-            sensitivity,
-            maxMultiplier,
             minThreshold,
             distanceSensitivity,
             maxDistanceMultiplier,
+            distanceExponent,
             roundValue,
             startY,
         ]
     )
 
     useEffect(() => {
-        if (isDragging && currentSpeed !== 0) {
+        if (isDragging) {
             const updateValue = () => {
-                onChange(calculateNewValue(currentSpeed, lastY.current))
+                onChange(calculateNewValue(lastY.current))
             }
-
             intervalRef.current = window.setInterval(updateValue, 16)
         }
-
         return () => {
             if (intervalRef.current) {
                 window.clearInterval(intervalRef.current)
             }
         }
-    }, [isDragging, currentSpeed, calculateNewValue, onChange])
+    }, [isDragging, calculateNewValue, onChange])
 
     const handleTouchStart = (e: React.TouchEvent) => {
         setIsDragging(true)
         const touchY = e.touches[0].clientY
         setStartY(touchY)
         lastY.current = touchY
-        lastTime.current = Date.now()
-        setCurrentSpeed(0)
     }
 
     const handleTouchMove = (e: React.TouchEvent) => {
         if (!isDragging) return
-
         const currentY = e.touches[0].clientY
-        const currentTime = Date.now()
-        const deltaY = currentY - lastY.current
-        const deltaTime = currentTime - lastTime.current
-
-        if (deltaTime > 0) {
-            const speed = (deltaY / deltaTime) * 1000
-            setCurrentSpeed(speed)
-            onChange(calculateNewValue(speed, currentY))
-        }
-
         lastY.current = currentY
-        lastTime.current = currentTime
+        onChange(calculateNewValue(currentY))
     }
 
     const handleTouchEnd = () => {
         setIsDragging(false)
-        setCurrentSpeed(0)
     }
 
     const handleWheel = (e: React.WheelEvent) => {
         e.preventDefault()
-        const speed = e.deltaY * wheelSensitivity
-        const mouseY = e.clientY
-        onChange(calculateNewValue(speed, mouseY))
+        const wheelDistance = Math.abs(e.deltaY) * wheelSensitivity
+        const direction = e.deltaY > 0 ? 1 : -1
+        const newValue = value + wheelDistance * direction
+        onChange(Math.min(Math.max(roundValue(newValue), min), max))
     }
 
     return (
